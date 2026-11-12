@@ -58,3 +58,26 @@ def test_missing_outside_windows_is_reported_separately():
     report = check([1, 2], [], {1: 1.2, 2: 9.0}, windows)
     assert report.missing_by_window == [1]
     assert report.missing_outside_windows == 1
+
+
+def test_report_is_inconclusive_when_cuts_did_not_happen():
+    from gapwatch.cli import _format
+    from gapwatch.listen_notify import RunConfig, RunResult
+
+    result = RunResult(run_id="x", sent=[1, 2], received=[1, 2], faults_requested=3)
+    result.fault_errors.append("cut at 1.00s failed: backend 42 was not terminated")
+    text = _format(check([1, 2], [1, 2]), result, RunConfig(dsn=""))
+    assert "inconclusive" in text
+    assert "3 connection cut(s) requested, 0 happened" in text
+    assert "no changes lost" not in text
+
+
+def test_report_says_no_loss_only_when_all_cuts_happened():
+    from gapwatch.cli import _format
+    from gapwatch.listen_notify import RunConfig, RunResult
+
+    result = RunResult(
+        run_id="x", sent=[1], received=[1], windows=[Window(1.0, 2.0)], faults_requested=1
+    )
+    text = _format(check([1], [1], {1: 0.5}, result.windows), result, RunConfig(dsn=""))
+    assert "Result: no changes lost." in text

@@ -67,6 +67,8 @@ class RunResult:
     received: list[int] = field(default_factory=list)
     windows: list[Window] = field(default_factory=list)
     duration: float = 0.0
+    faults_requested: int = 0
+    fault_errors: list[str] = field(default_factory=list)
 
 
 def setup(dsn: str) -> None:
@@ -89,6 +91,10 @@ class _Run:
         self.writer_done = threading.Event()
         self.stop = threading.Event()
         self.kill_times: list[float] = []
+        # Backend pid of the listener's current connection. Matching on the pid
+        # rather than application_name also works through connection poolers,
+        # which often don't pass application_name on to the server.
+        self.listener_pid: int | None = None
         self.resubscribe_times: list[float] = []
         self.errors: list[BaseException] = []
 
@@ -107,7 +113,9 @@ class _Run:
                         autocommit=True,
                         application_name=self.app_name,
                     ) as conn:
+                        row = conn.execute("select pg_backend_pid()").fetchone()
                         conn.execute(f"listen {CHANNEL}")
+                        self.listener_pid = row[0] if row else None
                         if self.listening.is_set():
                             self.resubscribe_times.append(self.now())
                         self.listening.set()
@@ -116,6 +124,7 @@ class _Run:
                                 if note.payload.startswith(prefix):
                                     self.result.received.append(int(note.payload[len(prefix) :]))
                 except psycopg.OperationalError:
+                    self.listener_pid = None
                     if not self.stop.is_set():
                         time.sleep(self.config.reconnect_delay)
         except BaseException as exc:  # surface unexpected errors to the caller
@@ -160,19 +169,28 @@ class _Run:
                     delay = at - self.now()
                     if delay > 0 and self.writer_done.wait(delay):
                         return
+                    pid = self.listener_pid
+                    if pid is None:
+                        self.result.fault_errors.append(
+                            f"cut at {self.now():.2f}s skipped: listener was not connected"
+                        )
+                        continue
                     # Take the time before the cut, so changes committed while
                     # the terminate call is in flight count as part of it.
                     cut_at = self.now()
-                    cur = conn.execute(
-                        "select count(*) from ("
-                        " select pg_terminate_backend(pid) from pg_stat_activity"
-                        " where application_name = %s and pid <> pg_backend_pid()"
-                        ") t",
-                        (self.app_name,),
-                    )
-                    row = cur.fetchone()
+                    try:
+                        row = conn.execute("select pg_terminate_backend(%s)", (pid,)).fetchone()
+                    except psycopg.Error as exc:
+                        self.result.fault_errors.append(
+                            f"cut at {cut_at:.2f}s failed: {exc}".strip()
+                        )
+                        continue
                     if row and row[0]:
                         self.kill_times.append(cut_at)
+                    else:
+                        self.result.fault_errors.append(
+                            f"cut at {cut_at:.2f}s failed: backend {pid} was not terminated"
+                        )
         except BaseException as exc:
             self.errors.append(exc)
 
@@ -209,6 +227,7 @@ class _Run:
             if back in self.resubscribe_times:
                 self.resubscribe_times.remove(back)
         self.result.duration = end
+        self.result.faults_requested = len(self.fault_times())
         return self.result
 
 

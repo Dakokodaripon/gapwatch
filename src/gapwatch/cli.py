@@ -41,12 +41,26 @@ def _format(report: Report, result: RunResult, config: RunConfig) -> str:
         lines.append("")
         suffix = f" (+{more} more ranges)" if more > 0 else ""
         lines.append(f"  Missing changes: {shown}{suffix}")
+    injected = len(result.windows)
+    inconclusive = injected < result.faults_requested
+    if inconclusive:
+        lines.append("")
+        lines.append(
+            f"  Warning: {result.faults_requested} connection cut(s) requested, "
+            f"{injected} happened."
+        )
+        for error in result.fault_errors:
+            lines.append(f"    - {error}")
     lines.append("")
-    lines.append(
-        "Result: no changes lost."
-        if report.ok
-        else "Result: your app would have silently missed these changes."
-    )
+    if not report.ok:
+        lines.append("Result: your app would have silently missed these changes.")
+    elif inconclusive:
+        lines.append(
+            "Result: inconclusive. Nothing was lost, but not every planned connection cut "
+            "happened, so this run doesn't show how your app handles them."
+        )
+    else:
+        lines.append("Result: no changes lost.")
     return "\n".join(lines)
 
 
@@ -70,6 +84,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             run_id=result.run_id,
             source="listen_notify",
             duration_s=round(result.duration, 3),
+            faults_requested=result.faults_requested,
+            faults_injected=len(result.windows),
+            fault_errors=result.fault_errors,
             disconnects=[
                 {"start_s": round(w.start, 3), "end_s": round(w.end, 3)} for w in result.windows
             ],
@@ -83,7 +100,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-    return 1 if args.fail_on_loss and not report.ok else 0
+        inconclusive = len(result.windows) < result.faults_requested
+        return 1 if args.fail_on_loss and (not report.ok or inconclusive) else 0
 
 
 def _cmd_cleanup(args: argparse.Namespace) -> int:

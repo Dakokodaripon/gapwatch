@@ -33,6 +33,8 @@ That's a real run against Postgres 16, with a listener that waits one second bef
 
 ## Quick start
 
+Requires Python 3.10 or newer. macOS includes Python 3.9, so install a newer version from [python.org](https://www.python.org/downloads/) first.
+
 ```bash
 pip install gapwatch
 gapwatch run --dsn "postgresql://user:password@host:5432/dbname"
@@ -47,15 +49,38 @@ You can also set `GAPWATCH_DSN` instead of passing `--dsn`.
 
 gapwatch works with a Supabase database, since it's Postgres underneath. This tests Postgres LISTEN/NOTIFY on your Supabase database. Support for Supabase Realtime itself is on the roadmap.
 
-1. In your Supabase project, open **Connect** and copy the **Direct connection** string (or the **Session pooler** one if your network has no IPv6).
-2. Run:
+1. In your Supabase project, click **Connect**, open the **Direct** tab and choose **Session pooler**. It works on any network. The Direct connection needs IPv6, which many home networks don't have.
+2. Replace `[YOUR-PASSWORD]` in the string with your database password, without the brackets.
+3. Run:
 
 ```bash
-gapwatch run --dsn "postgresql://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres"
+gapwatch run --dsn "postgresql://postgres.YOUR_PROJECT_REF:YOUR_PASSWORD@aws-1-us-east-2.pooler.supabase.com:5432/postgres" --count 600 --rate 5
 gapwatch cleanup --dsn "..."
 ```
 
 Don't use the **Transaction pooler** (port 6543). It doesn't support LISTEN, so the listener can't subscribe.
+
+**Use a lower `--rate` when the database is far away.** gapwatch writes one change at a time and waits for each to be confirmed. From Brazil to a database in Ohio, each change takes about 150 ms, so the default of 500 per second isn't reachable. `--rate 5` keeps the timing accurate.
+
+### Real result: Brazil to Supabase in Ohio, through the Session pooler
+
+   ![gapwatch output against Supabase: 3 disconnects, 39 changes missed](docs/supabase-run.png)
+
+```
+Wrote 600 changes and cut the listener's connection 3 time(s)
+
+  Missing       39
+  Duplicated    0
+  Out of order  0
+
+  Disconnect #1: 26.59s → 29.14s (2.55s offline), 12 changes missed
+  Disconnect #2: 55.35s → 58.72s (3.37s offline), 13 changes missed
+  Disconnect #3: 94.15s → 97.89s (3.75s offline), 14 changes missed
+
+Result: your app would have silently missed these changes.
+```
+
+**Reconnecting takes longer than you think.** The listener was set to wait 1 second before reconnecting, but each disconnect lasted 2.5 to 3.75 seconds. The rest is the cost of opening a new connection across a continent and through a pooler. In a real app, the gap is longer than its reconnect setting suggests, and so is the number of changes it misses.
 
 Use a test or development project, not production.
 
