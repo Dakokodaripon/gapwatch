@@ -34,7 +34,7 @@ That's a real run against Postgres 16, with a listener that waits one second bef
 ## Quick start
 
 ```bash
-pip install gapwatch    # or, until the first release: pip install git+https://github.com/Dakokodaripon/gapwatch
+pip install gapwatch
 gapwatch run --dsn "postgresql://user:password@host:5432/dbname"
 gapwatch cleanup --dsn "..."
 ```
